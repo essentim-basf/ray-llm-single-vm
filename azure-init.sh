@@ -32,4 +32,4 @@ applications:
 
 EOM
 
-docker run -it --gpus all --shm-size 10g -p 8080:8000 -e HF_HOME=/data --restart=always -v $(pwd)/data:/data anyscale/ray-llm:latest bash /data/init.sh
+docker run -d --gpus all --shm-size 10g -p 8080:8000 -e HF_HOME=/data --restart=always -v $(pwd)/data:/data anyscale/ray-llm:latest bash /data/init.sh
