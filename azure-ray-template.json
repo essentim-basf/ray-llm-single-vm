@@ -1,0 +1,265 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "adminUsername": {
+            "type": "string",
+            "defaultValue": "ubuntu",
+            "metadata": {
+                "description": "Username for the Virtual Machine."
+            }
+        },
+        "publicKey": {
+            "type": "securestring",
+            "metadata": {
+                "description": "SSH Key for the Virtual Machine"
+            }
+        },
+        "adminPassword": {
+            "type": "securestring",
+            "metadata": {
+                "description": "Password for the Virtual Machine and JupyterLab"
+            }
+        },
+        "nodeSize": {
+            "type": "string",
+            "defaultValue": "Standard_NC8as_T4_v3",
+            "metadata": {
+                "description": "The size of the node Virtual Machine"
+            }
+        },
+        "nodePriority": {
+            "type": "string",
+            "defaultValue": "Regular",
+            "allowedValues": ["Regular", "Low", "Spot"],
+            "metadata": {
+                "description": "Use Azure Spot instance for worker nodes"
+            }
+        },
+        "model": {
+            "type": "string",
+            "defaultValue": "meta-llama--Llama-2-7b-chat-hf",
+            "allowedValues": [
+                "meta-llama--Llama-2-7b-chat-hf",
+                "amazon--LightGPT",
+                "OpenAssistant--falcon-7b-sft-top1-696"
+            ],
+            "metadata": {
+                "description": "Conda environment to select (installed on DSVM)"
+            }
+        },
+        "hftoken": {
+            "type": "string",
+            "defaultValue": "",
+            "metadata": {
+                "description": "Hugging Face Token to download gated models"
+            }
+        }
+    },
+    "variables": {
+        "location": "[resourceGroup().location]",
+        "publicIpAddressName": "[concat(variables('vmName'), '-ip' )]",
+        "networkIpConfig": "[guid(resourceGroup().id, variables('vmName'))]",
+        "networkInterfaceName": "[concat(variables('vmName'), '-nic')]",
+        "vNetName": "llm-vnet",
+        "subnetName": "llm-subnet",
+        "subnetAddressSpace": "10.33.0.0/16",
+        "subnetRef": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vNetName'), variables('subnetName'))]",
+
+        "azureScriptInitUrl": "https://raw.githubusercontent.com/essentim-basf/ray-llm-single-vm/main/azure-init.sh",
+        "vmName": "llm-node",
+        "osDiskType": "Premium_LRS",
+        "networkSecurityGroupName": "llm-nsg",
+
+        "imagePublisher": "microsoft-dsvm",
+        "imageOffer": "ubuntu-2004",
+        "imageSku": "2004-gen2",
+        "imageVersion": "latest"
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Network/networkSecurityGroups",
+            "apiVersion": "2019-02-01",
+            "name": "[variables('networkSecurityGroupName')]",
+            "location": "[variables('location')]",
+            "properties": {
+                "securityRules": [
+                    {
+                        "name": "SSH",
+                        "properties": {
+                            "priority": 1000,
+                            "protocol": "TCP",
+                            "access": "Allow",
+                            "direction": "Inbound",
+                            "sourceAddressPrefix": "*",
+                            "sourcePortRange": "*",
+                            "destinationAddressPrefix": "*",
+                            "destinationPortRange": "22"
+                        }
+                    },
+                    {
+                        "name": "LLM-API",
+                        "properties": {
+                            "priority": 1001,
+                            "protocol": "TCP",
+                            "access": "Allow",
+                            "direction": "Inbound",
+                            "sourceAddressPrefix": "*",
+                            "sourcePortRange": "*",
+                            "destinationAddressPrefix": "*",
+                            "destinationPortRange": "8080"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "type": "Microsoft.Network/virtualNetworks",
+            "apiVersion": "2019-11-01",
+            "name": "[variables('vNetName')]",
+            "location": "[variables('location')]",
+            "properties": {
+                "addressSpace": {
+                    "addressPrefixes": [
+                        "[variables('subnetAddressSpace')]"
+                    ]
+                },
+                "subnets": [
+                    {
+                        "name": "[variables('subnetName')]",
+                        "properties": {
+                            "addressPrefix": "[variables('subnetAddressSpace')]"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "type": "Microsoft.Network/publicIpAddresses",
+            "apiVersion": "2019-02-01",
+            "name": "[variables('publicIpAddressName')]",
+            "location": "[variables('location')]",
+            "properties": {
+                "publicIpAllocationMethod": "Static",
+                "publicIPAddressVersion": "IPv4"
+            },
+            "sku": {
+                "name": "Basic",
+                "tier": "Regional"
+            }
+        },
+        {
+            "type": "Microsoft.Network/networkInterfaces",
+            "apiVersion": "2020-06-01",
+            "name": "[variables('networkInterfaceName')]",
+            "location": "[variables('location')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/publicIpAddresses', variables('publicIpAddressName'))]",
+                "[resourceId('Microsoft.Network/networkSecurityGroups', variables('networkSecurityGroupName'))]"
+            ],
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "[variables('networkIpConfig')]",
+                        "properties": {
+                            "subnet": {
+                                "id": "[variables('subnetRef')]"
+                            },
+                            "publicIpAddress": {
+                                "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('publicIPAddressName'))]"
+                            }
+                        }
+                    }
+                ],
+                "networkSecurityGroup": {
+                    "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('networkSecurityGroupName'))]"
+                }
+            }
+        },
+        {
+            "type": "Microsoft.Compute/virtualMachines",
+            "apiVersion": "2020-06-01",
+            "name": "[variables('vmName')]",
+            "location": "[variables('location')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/networkInterfaces', variables('networkInterfaceName'))]"
+            ],
+            "properties": {
+                "hardwareProfile": {
+                    "vmSize": "[parameters('nodeSize')]"
+                },
+                "priority": "[parameters('nodePriority')]",
+                "storageProfile": {
+                    "osDisk": {
+                        "createOption": "FromImage",
+                        "managedDisk": {
+                            "storageAccountType": "[variables('osDiskType')]"
+                        }
+                    },
+                    "imageReference": {
+                        "publisher": "[variables('imagePublisher')]",
+                        "offer": "[variables('imageOffer')]",
+                        "sku": "[variables('imageSku')]",
+                        "version": "[variables('imageVersion')]"
+                    }
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces', variables('networkInterfaceName'))]"
+                        }
+                    ]
+                },
+                "osProfile": {
+                    "computerName": "[variables('vmName')]",
+                    "adminUsername": "[parameters('adminUsername')]",
+                    "adminPassword": "[parameters('adminPassword')]",
+                    "linuxConfiguration": {
+                        "disablePasswordAuthentication": false,
+                        "ssh": {
+                            "publicKeys": [
+                                {
+                                    "path": "[concat('/home/', parameters('adminUsername'), '/.ssh/authorized_keys')]",
+                                    "keyData": "[parameters('publicKey')]"
+                                }
+                            ]
+                        }
+                    }
+                }
+            },
+            "resources": [
+                {
+                    "type": "Microsoft.Compute/virtualMachines/extensions",
+                    "name": "[concat(variables('vmName'), '/NodeInitScript')]",
+                    "apiVersion": "2020-06-01",
+                    "location": "[variables('location')]",
+                    "dependsOn": [
+                        "[resourceId('Microsoft.Compute/virtualMachines', variables('vmName'))]"
+                    ],
+                    "properties": {
+                        "publisher": "Microsoft.Azure.Extensions",
+                        "type": "CustomScript",
+                        "typeHandlerVersion": "2.1",
+                        "autoUpgradeMinorVersion": true,
+                        "settings": {
+                            "commandToExecute": "[concat('sh azure-init.sh \"',parameters('model'),'\" \"',parameters('hftoken'),'\" 2>&1 >/var/log/node-init.log')]",
+                            "fileUris": [
+                                "[variables('azureScriptInitUrl')]"
+                            ]
+                        }
+                    }
+                }
+            ]
+        }
+    ],
+    "outputs": {
+        "LLM-API": {
+            "type": "string",
+            "value": "[concat('https://', reference(variables('publicIpAddressName')).ipAddress, ':8080')]"
+        },
+        "SSH": {
+            "type": "string",
+            "value": "[concat('ssh -t ', parameters('adminUsername'),'@', reference(variables('publicIpAddressName')).ipAddress)]"
+        }
+    }
+}
